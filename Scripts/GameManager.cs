@@ -208,19 +208,19 @@ namespace BizarreChess
 
         #region Network Mode
 
+        private bool _networkCallbacksSetup = false;
+        
         private void SetupNetworkCallbacks()
         {
+            if (_networkCallbacksSetup) return;
+            
             // Find NetworkedGameState if not set (it may be spawned later)
             if (_networkedGameState == null)
                 _networkedGameState = FindFirstObjectByType<NetworkedGameState>();
                 
             if (_networkedGameState != null)
             {
-                _networkedGameState.OnUnitMoved += OnNetworkUnitMoved;
-                _networkedGameState.OnUnitCaptured += OnNetworkUnitCaptured;
-                _networkedGameState.OnTurnChanged += OnNetworkTurnChanged;
-                _networkedGameState.OnGameEnded += OnNetworkGameEnded;
-                _networkedGameState.OnGameStarted += OnNetworkGameStarted;
+                SubscribeToNetworkedGameState();
             }
             else
             {
@@ -234,6 +234,19 @@ namespace BizarreChess
                 _networkManager.OnClientConnected += OnClientConnected;
             }
         }
+        
+        private void SubscribeToNetworkedGameState()
+        {
+            if (_networkCallbacksSetup || _networkedGameState == null) return;
+            _networkCallbacksSetup = true;
+            
+            Debug.Log("[GameManager] Subscribing to NetworkedGameState events");
+            _networkedGameState.OnUnitMoved += OnNetworkUnitMoved;
+            _networkedGameState.OnUnitCaptured += OnNetworkUnitCaptured;
+            _networkedGameState.OnTurnChanged += OnNetworkTurnChanged;
+            _networkedGameState.OnGameEnded += OnNetworkGameEnded;
+            _networkedGameState.OnGameStarted += OnNetworkGameStarted;
+        }
 
         private System.Collections.IEnumerator WaitForNetworkedGameState()
         {
@@ -245,11 +258,7 @@ namespace BizarreChess
                 if (_networkedGameState != null)
                 {
                     Debug.Log("[GameManager] Found NetworkedGameState!");
-                    _networkedGameState.OnUnitMoved += OnNetworkUnitMoved;
-                    _networkedGameState.OnUnitCaptured += OnNetworkUnitCaptured;
-                    _networkedGameState.OnTurnChanged += OnNetworkTurnChanged;
-                    _networkedGameState.OnGameEnded += OnNetworkGameEnded;
-                    _networkedGameState.OnGameStarted += OnNetworkGameStarted;
+                    SubscribeToNetworkedGameState();
                 }
             }
         }
@@ -310,8 +319,18 @@ namespace BizarreChess
             Debug.Log(winnerId == localPlayerId ? "You won!" : (winnerId == -1 ? "Draw!" : "You lost!"));
         }
 
+        private bool _networkGameInitialized = false;
+        
         private void OnNetworkGameStarted()
         {
+            // Prevent double initialization
+            if (_networkGameInitialized)
+            {
+                Debug.LogWarning("[GameManager] Network game already initialized, skipping");
+                return;
+            }
+            _networkGameInitialized = true;
+            
             Debug.Log("[GameManager] Network game started! Rendering board and units...");
             
             // Get game data from NetworkedGameState
@@ -331,13 +350,16 @@ namespace BizarreChess
                 
                 // Render units from networked state
                 var units = _networkedGameState.GetAllUnits();
+                Debug.Log($"[GameManager] About to render {units.Count} units...");
+                
                 foreach (var unit in units)
                 {
                     SpawnUnitRenderer(unit);
                 }
                 
+                _boardRenderer.OnTileClicked -= OnTileClicked; // Unsub first to prevent doubles
                 _boardRenderer.OnTileClicked += OnTileClicked;
-                Debug.Log($"[GameManager] Rendered {units.Count} units!");
+                Debug.Log($"[GameManager] Rendered {_unitRenderers.Count} units!");
             }
             else
             {
@@ -374,6 +396,13 @@ namespace BizarreChess
 
         private void SpawnUnitRenderer(UnitState unit)
         {
+            // Don't create duplicate renderers
+            if (_unitRenderers.ContainsKey(unit.UnitId))
+            {
+                Debug.LogWarning($"[GameManager] Renderer already exists for unit {unit.UnitId}, skipping");
+                return;
+            }
+            
             if (!_unitDefinitions.TryGetValue(unit.DefinitionId, out var definition))
                 return;
 
@@ -385,27 +414,13 @@ namespace BizarreChess
             }
             else
             {
-                // Create placeholder
-                var go = new GameObject($"Unit_{unit.UnitId}_{unit.DefinitionId}");
-                go.transform.SetParent(_unitsContainer);
-                renderer = go.AddComponent<UnitRenderer>();
-
-                // Add TextMeshPro for Unicode chess pieces
-                var textGO = new GameObject("Text");
-                textGO.transform.SetParent(go.transform);
-                textGO.transform.localPosition = new Vector3(0, 0.01f, 0); // Slightly above tile
-                textGO.transform.localRotation = Quaternion.Euler(90, 0, 0); // Face up
+                // Create 3D chess piece
+                bool isWhite = unit.OwnerId == 0;
+                var pieceGO = ChessPieceMeshGenerator.CreatePieceObject(definition.PieceType, isWhite);
+                pieceGO.name = $"Unit_{unit.UnitId}_{unit.DefinitionId}";
+                pieceGO.transform.SetParent(_unitsContainer);
                 
-                var tmp = textGO.AddComponent<TMPro.TextMeshPro>();
-                tmp.alignment = TMPro.TextAlignmentOptions.Center;
-                tmp.fontSize = 8; // Bigger font
-                tmp.fontStyle = TMPro.FontStyles.Bold;
-                tmp.enableAutoSizing = false;
-                
-                // Set rect transform to center the text on the tile
-                var rect = textGO.GetComponent<RectTransform>();
-                rect.sizeDelta = new Vector2(1f, 1f);
-                rect.pivot = new Vector2(0.5f, 0.5f);
+                renderer = pieceGO.AddComponent<UnitRenderer>();
             }
 
             var position = GetWorldPosition(unit.CurrentNodeId);

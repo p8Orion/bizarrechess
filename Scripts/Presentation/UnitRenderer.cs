@@ -6,19 +6,21 @@ namespace BizarreChess.Presentation
 {
     /// <summary>
     /// Renders a single unit on the board.
+    /// Supports 2D (sprites/text) and 3D (mesh) rendering modes.
     /// </summary>
     public class UnitRenderer : MonoBehaviour
     {
         [Header("Visual Components")]
         [SerializeField] private SpriteRenderer _spriteRenderer;
         [SerializeField] private TextMeshPro _unicodeText;
+        [SerializeField] private MeshRenderer _meshRenderer;
         [SerializeField] private SpriteRenderer _selectionIndicator;
         [SerializeField] private GameObject _healthBar;
         [SerializeField] private Transform _healthFill;
 
         [Header("Colors")]
-        [SerializeField] private Color _player1Color = Color.white;
-        [SerializeField] private Color _player2Color = Color.black;
+        [SerializeField] private Color _player1Color = new Color(0.95f, 0.92f, 0.85f); // Ivory
+        [SerializeField] private Color _player2Color = new Color(0.15f, 0.12f, 0.10f); // Dark wood
         [SerializeField] private Color _selectedColor = new Color(1f, 1f, 0f, 0.5f);
         [SerializeField] private Color _damagedColor = Color.red;
 
@@ -36,6 +38,7 @@ namespace BizarreChess.Presentation
         private bool _isMoving;
         private bool _isSelected;
         private float _moveProgress;
+        private bool _is3D;
 
         public void Initialize(UnitState state, UnitDefinition definition, Vector3 position)
         {
@@ -43,13 +46,27 @@ namespace BizarreChess.Presentation
             _currentState = state;
             _definition = definition;
             _targetPosition = position;
-            transform.position = position + Vector3.up * 0.5f;
 
             // Auto-find components if not assigned (for dynamically created units)
+            if (_meshRenderer == null)
+                _meshRenderer = GetComponent<MeshRenderer>();
             if (_unicodeText == null)
                 _unicodeText = GetComponentInChildren<TextMeshPro>();
             if (_spriteRenderer == null)
                 _spriteRenderer = GetComponent<SpriteRenderer>();
+
+            // Determine render mode
+            _is3D = _meshRenderer != null;
+            
+            // Position differs for 2D vs 3D
+            if (_is3D)
+            {
+                transform.position = position; // 3D pieces sit on the board
+            }
+            else
+            {
+                transform.position = position + Vector3.up * 0.5f; // 2D hovers above
+            }
 
             UpdateVisuals();
         }
@@ -62,18 +79,26 @@ namespace BizarreChess.Presentation
 
         private void UpdateVisuals()
         {
-            // Set color based on player - white pieces light, black pieces dark
-            Color playerColor = _currentState.OwnerId == 0 ? Color.white : new Color(0.15f, 0.15f, 0.15f);
+            // Set color based on player
+            Color playerColor = _currentState.OwnerId == 0 ? _player1Color : _player2Color;
             Color outlineColor = _currentState.OwnerId == 0 ? Color.black : Color.white;
 
-            // Use Unicode text for placeholder
-            if (_unicodeText != null)
+            // 3D mesh rendering
+            if (_is3D && _meshRenderer != null)
             {
-                // Try Unicode first, fallback to letter if font doesn't support it
+                // Material color is already set by ChessPieceMeshGenerator
+                // But we can update it here for state changes
+                if (_meshRenderer.material != null)
+                {
+                    _meshRenderer.material.color = playerColor;
+                }
+            }
+            // 2D Unicode text fallback
+            else if (_unicodeText != null)
+            {
                 char pieceChar = _definition.GetUnicode(_currentState.OwnerId);
                 string displayText = ChessUnicode.GetPieceLetter(_definition.PieceType);
                 
-                // Check if font has the Unicode character
                 if (_unicodeText.font != null && _unicodeText.font.HasCharacter(pieceChar))
                 {
                     displayText = pieceChar.ToString();
@@ -100,8 +125,6 @@ namespace BizarreChess.Presentation
             {
                 float healthPercent = (float)_currentState.CurrentHealth / _currentState.MaxHealth;
                 _healthFill.localScale = new Vector3(healthPercent, 1, 1);
-                
-                // Show health bar only if damaged
                 _healthBar.SetActive(healthPercent < 1f);
             }
 
@@ -128,14 +151,33 @@ namespace BizarreChess.Presentation
                 _selectionIndicator.enabled = selected;
             }
 
-            // Visual feedback
-            transform.localScale = selected ? Vector3.one * 1.1f : Vector3.one;
+            // Visual feedback - scale up slightly when selected
+            float baseScale = _is3D ? 0.8f : 1f; // 3D pieces are scaled to 0.8
+            transform.localScale = Vector3.one * baseScale * (selected ? 1.15f : 1f);
+            
+            // For 3D, add emission glow when selected
+            if (_is3D && _meshRenderer != null && _meshRenderer.material != null)
+            {
+                if (selected)
+                {
+                    _meshRenderer.material.EnableKeyword("_EMISSION");
+                    Color emissionColor = _currentState.OwnerId == 0 
+                        ? new Color(1f, 0.9f, 0.5f) * 0.5f  // Gold glow for white
+                        : new Color(0.5f, 0.3f, 1f) * 0.5f; // Purple glow for black
+                    _meshRenderer.material.SetColor("_EmissionColor", emissionColor);
+                }
+                else
+                {
+                    _meshRenderer.material.DisableKeyword("_EMISSION");
+                    _meshRenderer.material.SetColor("_EmissionColor", Color.black);
+                }
+            }
         }
 
         public void MoveTo(Vector3 newPosition)
         {
             _startPosition = transform.position;
-            _targetPosition = newPosition + Vector3.up * 0.5f;
+            _targetPosition = _is3D ? newPosition : newPosition + Vector3.up * 0.5f;
             _isMoving = true;
             _moveProgress = 0f;
             
@@ -167,6 +209,13 @@ namespace BizarreChess.Presentation
 
         private void SetAlpha(float alpha)
         {
+            if (_meshRenderer != null && _meshRenderer.material != null)
+            {
+                var color = _meshRenderer.material.color;
+                color.a = alpha;
+                _meshRenderer.material.color = color;
+            }
+            
             if (_spriteRenderer != null)
             {
                 var color = _spriteRenderer.color;
